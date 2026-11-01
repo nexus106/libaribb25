@@ -34,7 +34,7 @@ int card_ecm(void *, B_CAS_ECM_RESULT *r, uint8_t *p, int n) {
     if (n < 1) return -1;
     Bytes k = key(p[0]);
     std::memcpy(r->scramble_key, k.data(), k.size());
-    r->return_code = 0x0800;
+    r->return_code = p[0] == 0xff ? 0xa901 : 0x0800;
     return 0;
 }
 struct Decoder {
@@ -218,6 +218,40 @@ void long_sparse(bool missing_ecm) {
     require(d.output.size() == s.plain.size() + chunks * padding.bytes.size(), "long sparse stream packet loss");
     require(std::equal(s.plain.begin(), s.plain.end(), d.output.begin()), "long sparse stream prefix decryption");
 }
+// PMTs and ECMs first seen by the normal streaming path must count as ready.
+void streaming_tables(bool late_ecm, size_t chunk, bool unpurchased = false) {
+    Decoder d; Stream initial;
+    initial.psi(0, pat());
+    initial.psi(0x100, pmt(1, 0x101, 0x301));
+    if (late_ecm) initial.psi(0x200, pmt(2, 0x201, 0x302));
+    initial.media(0x101, 0);
+    initial.psi(0x100, pmt(1, 0x101, 0x301));
+    initial.psi(0x301, section(0x82, {0}, false));
+    initial.psi(0x301, section(0x82, {0}, false));
+    initial.nulls();
+    require(d.put(initial.bytes, chunk) >= 0 && !d.output.empty(), "start partial streaming tables");
+    Stream ready;
+    if (late_ecm) ready.psi(0x302, section(0x82, {uint8_t(unpurchased ? 0xff : 1)}, false));
+    else ready.psi(0x200, pmt(2, 0x201, 0x301));
+    ready.nulls();
+    require(d.put(ready.bytes, chunk) >= 0, "complete tables during streaming");
+    size_t before = d.output.size();
+    Stream media;
+    media.media(0x333, 0); // Private PID not described by any PMT.
+    media.media(0x101, 0);
+    media.media(0x201, late_ecm ? 1 : 0);
+    media.nulls();
+    require(d.put(media.bytes, chunk) >= 0, "continue after streaming tables");
+    require(d.output.size() > before, "already received tables blocked private PID");
+    d.finish();
+    Bytes expected = initial.plain;
+    expected.insert(expected.end(), ready.plain.begin(), ready.plain.end());
+    // Existing behavior cannot select a key for an unlisted PID with two ECMs.
+    if (late_ecm) std::copy(media.bytes.begin(), media.bytes.begin() + 188, media.plain.begin());
+    if (unpurchased) std::copy(media.bytes.begin() + 376, media.bytes.begin() + 564, media.plain.begin() + 376);
+    expected.insert(expected.end(), media.plain.begin(), media.plain.end());
+    require(d.output == expected, "streaming table decryption changed");
+}
 void clear_stream() {
     Decoder d; Stream s; s.psi(0, pat());
     s.psi(0x100, pmt(1, 0x101)); s.psi(0x200, pmt(2, 0x201));
@@ -243,6 +277,12 @@ int main() {
     for (size_t chunk : {size_t(1), size_t(188), size_t(32712)}) {
         try { sparse_pat(chunk); sparse_ecm(chunk); }
         catch (const std::exception &e) { std::fprintf(stderr, "sparse PAT chunk=%zu: %s\n", chunk, e.what()); ++failures; }
+    }
+    for (size_t chunk : {size_t(1), size_t(188), size_t(32712)}) {
+        for (bool ecm : {false, true}) {
+            try { streaming_tables(ecm, chunk); if (ecm) streaming_tables(true, chunk, true); }
+            catch (const std::exception &e) { std::fprintf(stderr, "streaming %s chunk=%zu: %s\n", ecm ? "ECM" : "PMT", chunk, e.what()); ++failures; }
+        }
     }
     try { delayed(false, 188, true); clear_stream(); missing(false); missing(true); long_sparse(false); long_sparse(true); }
     catch (const std::exception &e) { std::fprintf(stderr, "edge case: %s\n", e.what()); ++failures; }

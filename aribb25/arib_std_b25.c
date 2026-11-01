@@ -2361,6 +2361,10 @@ static int proc_arib_std_b25(ARIB_STD_B25_PRIVATE_DATA *prv)
 			if(r < 0){
 				return r;
 			}
+			/* Normal streaming can complete an ECM skipped by startup probing. */
+			if((r == 0 || r == ARIB_STD_B25_WARN_UNPURCHASED_ECM) && dec->phase < 1){
+				dec->phase = 1;
+			}
 		}else if(prv->map[pid].type == PID_MAP_TYPE_PMT){
 			pgrm = (TS_PROGRAM *)(prv->map[pid].target);
 			if( (pgrm == NULL) || (pgrm->pmt == NULL) ){
@@ -2381,6 +2385,10 @@ static int proc_arib_std_b25(ARIB_STD_B25_PRIVATE_DATA *prv)
 			r = proc_pmt(prv, pgrm);
 			if(r < 0){
 				return r;
+			}
+			/* Keep readiness in step with PMTs accepted during streaming. */
+			if(r == 0 && pgrm->phase < 1){
+				pgrm->phase = 1;
 			}
 		}else if(prv->map[pid].type == PID_MAP_TYPE_EMM){
 			if( prv->emm_proc_on == 0){
