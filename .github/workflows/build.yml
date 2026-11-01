@@ -30,6 +30,8 @@ jobs:
           cmake -B build -DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: build
         run: cmake --build build
+      - name: startup readiness regression
+        run: ctest --test-dir build --output-on-failure
       - name: test
         run: |
           ./build/b1 2>&1 | grep --color=always "ARIB STD-B1"
@@ -93,6 +95,7 @@ jobs:
               grep -qx "LIBARIBB25_TARGET_IS_ARM32:INTERNAL=1" "$build_dir/CMakeCache.txt"
               grep -qx "USE_NEON:BOOL=${USE_NEON}" "$build_dir/CMakeCache.txt"
               cmake --build "$build_dir"
+              ctest --test-dir "$build_dir" --output-on-failure
               check_usage() {
                 expected="$1"
                 shift
@@ -132,6 +135,8 @@ jobs:
           cmake -B build
       - name: build
         run: cmake --build build
+      - name: startup readiness regression
+        run: ctest --test-dir build --output-on-failure
       - name: test
         run: |
           ./build/b1 2>&1 | grep --color=always "ARIB STD-B1"
