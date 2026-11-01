@@ -1487,6 +1487,40 @@ LAST:
 	return r;
 }
 
+/* A repeated table may belong to an active service while other PAT entries
+ * are off air. Only use that fallback when every buffered scrambled payload
+ * has an explicit stream mapping (and, for ECM probing, an initialized key). */
+static int check_scrambled_streams(ARIB_STD_B25_PRIVATE_DATA *prv, int require_key)
+{
+	uint8_t *curr = prv->sbuf.head;
+	uint8_t *tail = prv->sbuf.tail;
+	int32_t unit = prv->unit_size;
+	TS_HEADER hdr;
+	DECRYPTOR_ELEM *dec;
+
+	while(tail - curr >= unit){
+		if(curr[0] != 0x47 || (tail - curr >= 2*unit && curr[unit] != 0x47)){
+			curr = resync(curr, tail, unit);
+			if(curr == NULL){
+				break;
+			}
+		}
+		extract_ts_header(&hdr, curr);
+		if(!hdr.transport_error_indicator && hdr.transport_scrambling_control &&
+		   (hdr.adaptation_field_control & 0x01)){
+			if(prv->map[hdr.pid].type != PID_MAP_TYPE_OTHER){
+				return 0;
+			}
+			dec = (DECRYPTOR_ELEM *)(prv->map[hdr.pid].target);
+			if(dec == NULL || (require_key && dec->m2 == NULL)){
+				return 0;
+			}
+		}
+		curr += unit;
+	}
+	return 1;
+}
+
 static int check_pmt_complete(ARIB_STD_B25_PRIVATE_DATA *prv)
 {
 	int i,n;
@@ -1504,7 +1538,7 @@ static int check_pmt_complete(ARIB_STD_B25_PRIVATE_DATA *prv)
 		num[n] += 1;
 	}
 
-	if(num[2] > 0){
+	if(num[2] > 0 && check_scrambled_streams(prv, 0)){
 		return 1;
 	}
 
@@ -1645,8 +1679,6 @@ static int find_pmt(ARIB_STD_B25_PRIVATE_DATA *prv)
 			}
 		}else{
 			pgrm->phase = 2;
-			curr += unit;
-			goto LAST;
 		}
 
 	NEXT:
@@ -1881,7 +1913,7 @@ static int check_ecm_complete(ARIB_STD_B25_PRIVATE_DATA *prv)
 		e = (DECRYPTOR_ELEM *)(e->next);
 	}
 
-	if(num[2] > 0){
+	if(num[2] > 0 && check_scrambled_streams(prv, 1)){
 		return 1;
 	}
 
@@ -2027,8 +2059,6 @@ static int find_ecm(ARIB_STD_B25_PRIVATE_DATA *prv)
 
 		}else{
 			dec->phase = 2;
-			curr += unit;
-			goto LAST;
 		}
 
 	NEXT:
